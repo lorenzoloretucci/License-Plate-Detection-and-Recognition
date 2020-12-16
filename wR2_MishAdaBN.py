@@ -5,13 +5,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
+from tqdm import tqdm
 import numpy as np
 import os
 import argparse
 from time import time
 from load_data import *
 from torch.optim import lr_scheduler
-from tool_metrics import bboxes_iou
+from tool_metrics import *
 
 # import minerl
 # import gym
@@ -39,7 +40,7 @@ def main():
                     help="batch size for train")
     ap.add_argument("-r", "--resume", default='111',
                     help="file for re-train")
-    ap.add_argument("-w", "--writeFile", default='wR2_MishAdaBN.out',
+    ap.add_argument("-w", "--writeFile", default='wR2_MishAdaBN_out\wR2_MishAdaBN_try3-2.out',
                     help="file for output")
     args = vars(ap.parse_args())
 
@@ -189,13 +190,12 @@ def main():
             lossAver_val = []
 
             model.train(True)
-            # lrScheduler.step()
             start = time()
 
             IoU = []
             IoU_val = []
 
-            for i, (XI, YI) in enumerate(trainloader):
+            for i, (XI, YI) in tqdm(enumerate(trainloader)):
                 # print('%s/%s %s' % (i, times, time()-start))
                 YI = np.array([el.numpy() for el in YI]).T
                 if use_gpu:
@@ -210,28 +210,42 @@ def main():
                 # Compute and print loss
                 loss = 0.0
                 if len(y_pred) == batchSize:
-                    #loss += 0.8 * nn.L1Loss().cuda()(y_pred[:][:2], y[:][:2])
-                    #loss += 0.8 * nn.L1Loss().cuda()(y_pred[:][:2], y[:][:2])
-                    loss = criterion(y_pred, y)
+                    loss += 0.8 * nn.L1Loss().cuda()(y_pred[:][:2], y[:][:2])
+                    loss += 0.2 * nn.L1Loss().cuda()(y_pred[:][2:], y[:][2:])
+                    #loss = criterion(y_pred, y)
                     lossAver.append(loss.data)
 
                     # Zero gradients, perform a backward pass, and update the weights.
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
-                    #lrScheduler.step()
+                    lrScheduler.step()
                     torch.save(model.state_dict(), storeName)
-                    iou = bboxes_iou(y_pred, y, xyxy = False)
-                    IoU.append(iou)
+                    for k in range(batchSize):
+                        [cx, cy, w, h] = y_pred.data.cpu().numpy()[k].tolist()
+                        bbox_a = [(cx - w / 2) * 720, (cy - h / 2) * 1160, (cx + w / 2) * 720, (cy + h / 2) * 1160]
+
+                        [cx_o, cy_o, w_o, h_o] = y.data.cpu().numpy()[k].tolist()
+                        bbox_b = [(cx_o - w_o / 2) * 720, (cy_o - h_o / 2) * 1160, (cx_o + w_o / 2) * 720, (cy_o + h_o / 2) * 1160]
+
+                        iou = intersection_over_union(bbox_a, bbox_b)
+                        # if iou > 0.5:
+                        IoU.append(iou)
+                if i % 50 == 1:
+                    with open('wR2_MishAdaBN_out\\wR2_MishAdaBN_iter_try3.out', 'a') as outF:
+                        outF.write('train %s images, use %s seconds, loss %s\n' % (
+                            i * batchSize, end - start, sum(lossAver[-50:]) / len(lossAver[-50:])))
+
+
+            #lr *= learning_rate_decay
+            #update_lr(optimizer, lr)
 
             end = time()
-            lr *= learning_rate_decay
-            update_lr(optimizer, lr)
             start_v = time()
             model.eval()
             with torch.no_grad():
 
-                for j, (XI, YI) in enumerate(valloader):
+                for j, (XI, YI) in tqdm(enumerate(valloader)):
                     # print('%s/%s %s' % (i, times, time()-start))
                     YI = np.array([el.numpy() for el in YI]).T
                     if use_gpu:
@@ -246,40 +260,50 @@ def main():
                     # Compute and print loss
                     loss = 0.0
                     if len(y_pred) == batchSize:
-                        #loss += 0.8 * nn.L1Loss().cuda()(y_pred[:][:2], y[:][:2])
-                        #loss += 0.8 * nn.L1Loss().cuda()(y_pred[:][:2], y[:][:2])
-                        loss = criterion(y_pred, y)
+                        loss += 0.8 * nn.L1Loss().cuda()(y_pred[:][:2], y[:][:2])
+                        loss += 0.2 * nn.L1Loss().cuda()(y_pred[:][2:], y[:][2:])
+                        #loss = criterion(y_pred, y)
                         lossAver_val.append(loss.item())
 
-                        iou = bboxes_iou(y_pred, y, xyxy=False)
-                        IoU_val.append(iou)
+                        for k in range(batchSize):
+                            [cx, cy, w, h] = y_pred.data.cpu().numpy()[k].tolist()
+                            bbox_a = [(cx - w / 2) * 720, (cy - h / 2) * 1160, (cx + w / 2) * 720, (cy + h / 2) * 1160]
 
-                end_v = time()
+                            [cx_o, cy_o, w_o, h_o] = y.data.cpu().numpy()[k].tolist()
+                            bbox_b = [(cx_o - w_o / 2) * 720, (cy_o - h_o / 2) * 1160, (cx_o + w_o / 2) * 720,
+                                      (cy_o + h_o / 2) * 1160]
 
+                            iou = intersection_over_union(bbox_a, bbox_b)
+                            # if iou > 0.5:
+                            IoU_val.append(iou)
 
-                if i % 50 == 1:
-                    with open(args['writeFile'], 'a') as outF:
-                        outF.write('train %s images, use %s seconds, loss %s\n' % (
-                            i * batchSize, end - start, sum(lossAver[-50:]) / len(lossAver[-50:])))
-                    with open('wR2_val_MishAdaBN.out', 'a') as outF_v:
-                        outF_v.write('train %s images, use %s seconds, loss %s\n' % (
-                            i * batchSize, end - start_v, sum(lossAver_val[-50:]) / len(lossAver_val[-50:])))
+                            #loss += 1 - iou
+
+                            #lossAver_val.append(loss.item())
+
+                        #iou = bboxes_iou(y_pred, y, xyxy=False)
+                        #IoU_val.append(iou)
+
+                    end_v = time()
+                    if j % 50 == 0:
+                        with open('wR2_MishAdaBN_out\\wR2_val_MishAdaBN_iter_try3.out', 'a') as outF_v:
+                            outF_v.write('train %s images, use %s seconds, loss %s\n' % (j * batchSize, end - start_v, sum(lossAver_val[-50:]) / len(lossAver_val[-50:])))
 
             end_f = time()
             print('%s %s %s %s\n' % (epoch, sum(lossAver) / len(lossAver), sum(IoU) / len(IoU), end_f - start))
             print('%s %s %s %s\n' % (epoch, sum(lossAver_val) / len(lossAver_val), sum(IoU_val) / len(IoU_val), end_f - start))
             with open(args['writeFile'], 'a') as outF:
                 outF.write('Epoch: %s %s %s %s\n' % (epoch, sum(lossAver) / len(lossAver), sum(IoU) / len(IoU), end_f - start))
-            with open('wR2_val_MishAdaBN.out', 'a') as outF_v:
+            with open('wR2_MishAdaBN_out\\wR2_val_MishAdaBN_try3.out', 'a') as outF_v:
                 outF_v.write('Epoch: %s %s %s %s\n' % (epoch, sum(lossAver_val) / len(lossAver_val), sum(IoU_val) / len(IoU_val), end_f - start))
-            torch.save(model.state_dict(), storeName + str(epoch))
+            torch.save(model.state_dict(), storeName + str(epoch) + str(lr))
         return model
 
     numClasses = 4
     imgSize = (480, 480)
     batchSize = int(args["batchsize"]) if use_gpu else 8
-    modelFolder = 'wR2_MishAdaBN/'
-    storeName = modelFolder + 'wR2_MishAdaBN.pth'
+    modelFolder = 'wR2_MishAdaBN_try3/'
+    storeName = modelFolder + 'wR2_MishAdaBN_try3.pth'
 
     if not os.path.isdir(modelFolder):
         os.mkdir(modelFolder)
@@ -311,8 +335,8 @@ def main():
     print(get_n_params(model_conv))
 
     criterion = nn.MSELoss()
-    optimizer_conv = optim.SGD(model_conv.parameters(), lr=0.000001, momentum=0.9)
-    # lrScheduler = lr_scheduler.StepLR(optimizer_conv, step_size=5, gamma=0.1)
+    optimizer_conv = optim.SGD(model_conv.parameters(), lr=0.001, momentum=0.9)
+    lrScheduler = lr_scheduler.StepLR(optimizer_conv, step_size=5, gamma=0.1)
 
     # optimizer_conv = optim.Adam(model_conv.parameters(), lr=0.01)
 
@@ -323,9 +347,9 @@ def main():
     dst_val = ChaLocDataLoader(args["validation_images"].split(','), imgSize)
     valloader = DataLoader(dst_val, batch_size=batchSize, shuffle=True, num_workers=4)
 
-    lr_decay = 0.95
+    lr_decay = 0.97
     momentum = 0.9
-    lr = 0.000001#0.00001
+    lr = 0.001   ##1e-5 for 25k and 10k #0.00001 #0.000001 retrained with this one 1e-6 for 50k images
 
     model_conv = train_model(model_conv, criterion, optimizer_conv, start, epochs, lr, lr_decay, trainloader, valloader)
 
@@ -337,4 +361,6 @@ if __name__ == '__main__':
 
 # python rpnet\wR2_MishAdaBN.py -i rpnet\img_train -v rpnet\img_val -n 10 -b 4
 # python rpnet\wR2_MishAdaBN.py -i rpnet\newtrain -v rpnet\newvalidation -n 10 -b 4
-# python rpnet\wR2_MishAdaBN.py -i rpnet\train_50k -v rpnet\val_50k -n 10 -b 4
+# python rpnet\wR2_MishAdaBN.py -i rpnet\train_50k -v rpnet\val_50k -n 10 -b 8
+# python rpnet\wR2_MishAdaBN.py -i rpnet\train_50k -v rpnet\val_50k -n 10 -s 5 -b 4 -r wR2_MishAdaBN_try3\wR2_MishAdaBN_try3.pth47.737809374999997e-07
+# python rpnet\wR2_MishAdaBN.py -i rpnet\bho -v rpnet\validation_AML -n 15 -s 6 -b 4 -r wR2_MishAdaBN_try2\wR2_MishAdaBN_try2.pth6
